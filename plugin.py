@@ -22,30 +22,42 @@
 import Domoticz
 from toonapilib import Toon
 
-MyToon = None
-Heartbeat = 0
-DebugPrint = True
+
+DEBUG_PRINT = Parameters["Mode6"] == "Debug"
 
 class BasePlugin:
+
     enabled = False
-    def __init__(self):
-        return
+
+    def __init__(self, heartbeat=0):
+        self.toon = None
+        self.heartbeat = heartbeat
+
+    def _get_toon(self):
+        try:
+            myname = Parameters["Username"]
+            mypass = Parameters["Password"]
+            mykey = Parameters["Mode1"]
+            mysecret = Parameters["Mode2"]
+            if DEBUG_PRINT:
+                Domoticz.Log("Creating Toon object")
+            MyToon = Toon(myname, mypass, mykey, mysecret)
+        except Exception:
+            MyToon = None
+            Domoticz.Log("Could not create a toon object")
+            Domoticz.Log("Possible solution:")
+            Domoticz.Log("* Check your credentials")
+            Domoticz.Log("* Restart domoticz")
+        return MyToon
 
     def onStart(self):
-        global MyToon
-        global DebugPrint
-
-        DebugPrint = Parameters["Mode6"] == "Debug"
-        if DebugPrint:
+        if DEBUG_PRINT:
             Domoticz.Log("Starting toonapilib4domoticz with debug logging")
-
-        CreateToonObject()
-
-        if MyToon != None:
+        self.toon = self._get_toon()
+        if self.toon:
             #check for devices
-            if (len(Devices) == 0):
+            if not len(Devices):
                 Domoticz.Log("Creating Toon devices")
-
                 try:
                     Domoticz.Device(Name="Power usage", Unit=1, Type=250, Subtype=1).Create()
                     Domoticz.Device(Name="Gas usage", Unit=2, Type=251, Subtype=2).Create()
@@ -54,14 +66,15 @@ class BasePlugin:
                     Domoticz.Device(Name="Heating active", Unit=5, Type=244, Subtype=62, Switchtype=0).Create()
                     Domoticz.Device(Name="Hot water active", Unit=6, Type=244, Subtype=62, Switchtype=0).Create()
                     Domoticz.Device(Name="Preheat active", Unit=7, Type=244, Subtype=62, Switchtype=0).Create()
-                except:
+                except Exception:
                     Domoticz.Log("An error occured while creating Toon devices")
-
                 #add scenes
-                Options = {"LevelNames": "Unknown|Away|Sleep|Home|Comfort", "LevelOffHidden": "true", "SelectorStyle": "0"}
+                Options = {"LevelNames": "Unknown|Away|Sleep|Home|Comfort",
+                           "LevelOffHidden": "true",
+                           "SelectorStyle": "0"}
                 Domoticz.Device(Name="Scene", Unit=8, TypeName="Selector Switch", Options=Options).Create()
             else:
-                UpdateDevices()
+                self.update_devices()
 
     def onStop(self):
         Domoticz.Log("onStop called")
@@ -73,177 +86,143 @@ class BasePlugin:
         Domoticz.Log("onMessage called")
 
     def onCommand(self, Unit, Command, Level, Hue):
-        global myToon
-        if DebugPrint:
-            Domoticz.Log("onCommand called for Unit " + str(Unit) + ": Parameter '" + str(Command) + "', Level: " + str(Level))
-
+        if DEBUG_PRINT:
+            Domoticz.Log(("onCommand called for Unit {unit}: "
+                          "Parameter '{command}', Level: {level}").format(unit=Unit,
+                                                                          command=Command,
+                                                                          level=Level))
         try:
             if Unit == 4:
-                MyToon.thermostat = Level
-                Domoticz.Log("set level " +  str(Level))
-                szSetpoint = str(MyToon.thermostat)
+                self.toon.thermostat = Level
+                Domoticz.Log("set level {level}".format(level=Level))
+                szSetpoint = str(self.toon.thermostat)
                 Devices[4].Update(0, szSetpoint)
-        except:
-            Domoticz.Log("An error occured setting thermostat")
+        except Exception:
+            Domoticz.Log("An error occurred setting the thermostat")
 
     def onNotification(self, Name, Subject, Text, Status, Priority, Sound, ImageFile):
-        Domoticz.Log("Notification: " + Name + "," + Subject + "," + Text + "," + Status + "," + str(Priority) + "," + Sound + "," + ImageFile)
+        Domoticz.Log("Notification: {text}".format(text=','.join([Name,
+                                                                  Subject,
+                                                                  Text,
+                                                                  Status,
+                                                                  Priority,
+                                                                  Sound,
+                                                                  ImageFile])))
 
     def onDisconnect(self, Connection):
         Domoticz.Log("onDisconnect called")
 
     def onHeartbeat(self):
-        global Heartbeat
-        Heartbeat = Heartbeat + 1
-        if Heartbeat == 12:
-            Heartbeat = 0
-            UpdateDevices()
+        self.heartbeat += 1
+        if self.heartbeat == 12:
+            self.heartbeat = 0
+            self.update_devices()
 
-def CreateToonObject():
-    global MyToon
-    try:
-        myname = Parameters["Username"]
-        mypass = Parameters["Password"]
-        mykey = Parameters["Mode1"]
-        mysecret = Parameters["Mode2"]
+    def update_devices(self):
+        if self.toon:
+            try:
+                values = [self.toon.power.meter_reading_low,
+                          self.toon.power.meter_reading,
+                          self.toon.solar.meter_reading_low_produced,
+                          self.toon.solar.meter_reading_produced,
+                          self.toon.power.value,
+                          self.toon.solar.value]
+                szPower = ';'.join([str(value) for value in values])
+                if DEBUG_PRINT:
+                    Domoticz.Log("Update power/solar usage: {power}".format(power=szPower))
+                Devices[1].Update(0, szPower)
+            except Exception:
+                Domoticz.Log("An error occured updating power usage")
+            try:
+                szGas = str(self.toon.gas.daily_usage)
+                if DEBUG_PRINT:
+                    Domoticz.Log("Update gas usage: " + szGas)
+                Devices[2].Update(0, szGas)
+            except Exception:
+                Domoticz.Log("An error occured updating gas usage")
+            try:
+                szTemp = str(self.toon.temperature)
+                if DEBUG_PRINT:
+                    Domoticz.Log("Update temperature: " + szTemp)
+                Devices[3].Update(0, szTemp)
+            except Exception:
+                Domoticz.Log("An error occured updating temperature")
+            try:
+                szSetpoint = str(self.toon.thermostat)
+                if DEBUG_PRINT:
+                    Domoticz.Log("Update setpoint: " + szSetpoint)
+                Devices[4].Update(0, szSetpoint)
+            except Exception:
+                Domoticz.Log("An error occured updating thermostat")
+            try:
+                szThermostatState = None
+                if self.toon.thermostat_info.program_state == 0:
+                    #program is off
+                    szThermostatState = "Unknown"
+                else:
+                    try:
+                        szThermostatState = str(self.toon.thermostat_state.name)
+                    except:
+                        Domoticz.Log("An error occured updating thermostat state")
 
-        if DebugPrint:
-            Domoticz.Log("Creating Toon object")
-
-        MyToon = Toon(myname, mypass, mykey, mysecret)
-    except:
-        MyToon = None
-        Domoticz.Log("Could not create a toon object")
-        Domoticz.Log("Possible solution:")
-        Domoticz.Log("* Check your credentials")
-        Domoticz.Log("* Restart domoticz")
-
-def UpdateDevices():
-    global MyToon
-
-    if MyToon != None:
-        try: 
-            szPower = str(MyToon.power.meter_reading_low) + ";" + str(MyToon.power.meter_reading) + ";" \
-                    + str(MyToon.solar.meter_reading_low_produced) + ";" + str(MyToon.solar.meter_reading_produced) + ";"\
-                    + str(MyToon.power.value) + ";" + str(MyToon.solar.value)            
-            if DebugPrint:
-                Domoticz.Log("Update power/solar usage: " + szPower)
-            Devices[1].Update(0, szPower)
-        except:
-            Domoticz.Log("An error occured updating power usage")
-
-        try:
-            szGas = str(MyToon.gas.daily_usage)
-            if DebugPrint:
-                Domoticz.Log("Update gas usage: " + szGas)
-            Devices[2].Update(0, szGas)
-        except:
-            Domoticz.Log("An error occured updating gas usage")
-
-        try:
-            szTemp = str(MyToon.temperature)
-            if DebugPrint:
-                Domoticz.Log("Update temperature: " + szTemp)
-            Devices[3].Update(0, szTemp)
-        except:
-            Domoticz.Log("An error occured updating temperature")
-
-        try:
-            szSetpoint = str(MyToon.thermostat)
-            if DebugPrint:
-                Domoticz.Log("Update setpoint: " + szSetpoint)
-            Devices[4].Update(0, szSetpoint)
-        except:
-            Domoticz.Log("An error occured updating thermostat")
-
-        try:
-            szThermostatState = ""
-
-            if MyToon.thermostat_info.program_state == 0:
-                #program is off
-                szThermostatState = "Unknown"
-            else:
-                try:
-                    szThermostatState = str(MyToon.thermostat_state.name)
-                except:
-                    Domoticz.Log("An error occured updating thermostat state")
-
-            if szThermostatState != "":
-                if DebugPrint:
-                    Domoticz.Log("Update state: " + szThermostatState + " - " + str(getSceneValue(szThermostatState))) 
-                Devices[8].Update(2, str(getSceneValue(szThermostatState)))
-        except:
-            Domoticz.Log("An error occured updating thermostat state")
-
-        try:
-            szBurnerState = ""
+                if szThermostatState:
+                    if DEBUG_PRINT:
+                        Domoticz.Log("Update state: " + szThermostatState + " - " + str(self.get_scene_value(szThermostatState)))
+                    Devices[8].Update(2, str(self.get_scene_value(szThermostatState)))
+            except Exception:
+                Domoticz.Log("An error occurred updating thermostat state")
             hotwater_on = 0
             heating_on = 0
             preheating_on = 0
-
             try:
-                szBurnerState = MyToon.burner_state
-            except:
+                szBurnerState = self.toon.burner_state
+            except Exception:
+                szBurnerState = None
                 Domoticz.Log("An error occured updating burner state")
-
-            if szBurnerState != "":
-                if DebugPrint:
+            if szBurnerState:
+                if DEBUG_PRINT:
                     Domoticz.Log("Update state: " + szBurnerState)
- 
                 if szBurnerState == "on":
                     heating_on = 1
                 elif szBurnerState == "water_heating":
                     hotwater_on = 1
                 elif szBurnerState == "pre_heating":
                     preheating_on = 1
-
                 Devices[5].Update(heating_on, str(heating_on))
                 Devices[6].Update(hotwater_on, str(hotwater_on))
                 Devices[7].Update(preheating_on, str(preheating_on))
 
-        except:
-            Domoticz.Log("An error occured updating burner state")
+    @staticmethod
+    def get_scene_value(value):
+        return {'Unknown': 0,
+                'Away': 10,
+                'Sleep': 20,
+                'Home': 30,
+                'Comfort': 40}.get(value, 0)
 
-def getSceneValue(x):
-    return {
-        'Unknown': 0,
-        'Away': 10,
-        'Sleep': 20,
-        'Home': 30,
-        'Comfort': 40
-    }[x]
 
-global _plugin
 _plugin = BasePlugin()
 
 def onStart():
-    global _plugin
     _plugin.onStart()
 
 def onStop():
-    global _plugin
     _plugin.onStop()
 
 def onConnect(Connection, Status, Description):
-    global _plugin
     _plugin.onConnect(Connection, Status, Description)
 
 def onMessage(Connection, Data):
-    global _plugin
     _plugin.onMessage(Connection, Data)
 
 def onCommand(Unit, Command, Level, Hue):
-    global _plugin
     _plugin.onCommand(Unit, Command, Level, Hue)
 
 def onNotification(Name, Subject, Text, Status, Priority, Sound, ImageFile):
-    global _plugin
     _plugin.onNotification(Name, Subject, Text, Status, Priority, Sound, ImageFile)
 
 def onDisconnect(Connection):
-    global _plugin
     _plugin.onDisconnect(Connection)
 
 def onHeartbeat():
-    global _plugin
     _plugin.onHeartbeat()
